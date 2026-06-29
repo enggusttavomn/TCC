@@ -8,13 +8,16 @@ depender da API. ``pytest`` descobre automaticamente funcoes iniciadas por
 import pandas as pd
 import pytest
 
+from codigo_fonte.avaliacao import calcular_metricas, desnormalizar_ghi
 from codigo_fonte.preprocessamento import (
     NSRDB_API_URL,
     NSRDB_DAILY_AGGREGATION,
     NSRDB_GHI_UNIT,
     NSRDB_PRODUCT,
     NSRDB_SOURCE,
+    calcular_estatisticas_ghi_horario,
     carregar_serie_ghi,
+    garantir_resolucao_mensal,
     normalizar_minmax,
     preparar_serie_temporal,
     quantizar_ghi,
@@ -82,6 +85,46 @@ def test_normalizar_minmax_limita_entre_zero_e_um():
     assert normalizado.max() <= 1
 
 
+def test_desnormalizar_ghi_volta_para_escala_wm2():
+    """Confirma a conversao aproximada da escala normalizada para W/m2."""
+    valores = pd.Series([0.0, 0.5, 1.0])
+
+    desnormalizado = desnormalizar_ghi(valores, {"min": 100.0, "max": 300.0})
+
+    assert desnormalizado.tolist() == [100.0, 200.0, 300.0]
+
+
+def test_calcular_metricas_inclui_nrmse():
+    """Verifica a normalizacao do RMSE pela media real."""
+    metricas = calcular_metricas(
+        pd.Series([100.0, 200.0, 300.0]),
+        pd.Series([100.0, 200.0, 240.0]),
+        "Teste",
+        sufixo="wm2",
+    )
+
+    assert metricas["RMSE_wm2"] == pytest.approx((3600 / 3) ** 0.5)
+    assert metricas["nRMSE_wm2"] == pytest.approx(metricas["RMSE_wm2"] / 200.0)
+    assert metricas["nRMSE_percentual_wm2"] == pytest.approx(metricas["nRMSE_wm2"] * 100)
+
+
+def test_calcular_estatisticas_ghi_horario_retorna_cov():
+    """Calcula sigma/media usando observacoes horarias antes da media diaria."""
+    df = pd.DataFrame(
+        {
+            "data": pd.date_range("2024-01-01", periods=4, freq="h"),
+            "ghi": [0.0, 100.0, 200.0, 300.0],
+        }
+    )
+
+    estatisticas = calcular_estatisticas_ghi_horario(df)
+
+    assert estatisticas["ghi_horario_media"] == pytest.approx(150.0)
+    assert estatisticas["ghi_horario_sigma"] == pytest.approx(111.80339887498948)
+    assert estatisticas["ghi_horario_cov"] == pytest.approx(0.7453559924999299)
+    assert estatisticas["ghi_horario_fonte_estatistica"] == "horaria"
+
+
 def test_preparar_serie_temporal_cria_features_sem_futuro():
     """Verifica a estrutura basica da base supervisionada produzida."""
     # Sessenta dias sao suficientes para uma janela completa de 30 dias.
@@ -97,6 +140,48 @@ def test_preparar_serie_temporal_cria_features_sem_futuro():
     assert "ghi_t-1" in result.feature_columns
     assert "ghi_t-7" in result.feature_columns
     assert "ghi_media_movel_30d" in result.feature_columns
+    assert result.train_size > 0
+    assert result.train_size < len(result.dados_modelagem)
+
+
+def test_garantir_resolucao_mensal_calcula_media_dos_dias():
+    """Confirma que a serie mensal representa a media diaria dentro do mes."""
+    df = pd.DataFrame(
+        {
+            "data": pd.date_range("2024-01-01", periods=60, freq="D"),
+            "ghi": [100.0] * 31 + [200.0] * 29,
+        }
+    )
+
+    mensal = garantir_resolucao_mensal(df)
+
+    assert len(mensal) == 2
+    assert mensal.loc[0, "data"] == pd.Timestamp("2024-01-31")
+    assert mensal.loc[0, "ghi"] == pytest.approx(100.0)
+    assert mensal.loc[1, "data"] == pd.Timestamp("2024-02-29")
+    assert mensal.loc[1, "ghi"] == pytest.approx(200.0)
+
+
+def test_preparar_serie_temporal_mensal_cria_alvo_do_mes_seguinte():
+    """Verifica o fluxo mensal com lags e medias moveis em meses."""
+    df = pd.DataFrame(
+        {
+            "data": pd.date_range("2019-01-01", "2024-12-31", freq="D"),
+            "ghi": range(len(pd.date_range("2019-01-01", "2024-12-31", freq="D"))),
+        }
+    )
+
+    result = preparar_serie_temporal(
+        df,
+        frequencia_modelagem="mensal",
+        output_path=None,
+    )
+    primeira = result.dados_modelagem.iloc[0]
+
+    assert "ghi_t-6" in result.feature_columns
+    assert "ghi_media_movel_12m" in result.feature_columns
+    assert primeira["data"] == pd.Timestamp("2019-12-31")
+    assert primeira["data_alvo"] == pd.Timestamp("2020-01-31")
     assert result.train_size > 0
     assert result.train_size < len(result.dados_modelagem)
 

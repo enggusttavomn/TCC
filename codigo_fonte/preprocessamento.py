@@ -1,10 +1,10 @@
-"""Coleta e preparacao da serie diaria de GHI.
+"""Coleta e preparacao das series diaria e mensal de GHI.
 
 Este modulo cobre a parte anterior ao treinamento:
 
 1. identifica e le dados tabulares;
 2. coleta GHI oficial quando necessario;
-3. limpa e agrega a serie em frequencia diaria;
+3. limpa e agrega a serie em frequencia diaria ou mensal;
 4. ajusta quantizacao e normalizacao sem usar estatisticas do teste;
 5. chama a criacao das features e devolve a base pronta.
 """
@@ -60,6 +60,7 @@ NSRDB_PRODUCT = "GOES Aggregated PSM v4"
 NSRDB_SOURCE = "NLR/NSRDB"
 NSRDB_GHI_UNIT = "W/m2"
 NSRDB_DAILY_AGGREGATION = "media_diaria"
+FREQUENCIAS_MODELAGEM = {"diaria", "mensal"}
 
 
 @dataclass
@@ -200,6 +201,70 @@ def garantir_resolucao_diaria(df: pd.DataFrame) -> pd.DataFrame:
         .reset_index()
     )
     return diario
+
+
+def garantir_resolucao_mensal(df: pd.DataFrame) -> pd.DataFrame:
+    """Agrega a serie diaria para resolucao mensal usando media dos dias.
+
+    Args:
+        df: DataFrame diario com colunas ``data`` e ``ghi``.
+
+    Returns:
+        DataFrame mensal com colunas ``data`` e ``ghi``. A data fica no fim do
+        mes civil para preservar a semantica do agrupamento mensal.
+    """
+    mensal = (
+        df.set_index("data")[["ghi"]]
+        .resample("ME")
+        .mean()
+        .dropna(subset=["ghi"])
+        .reset_index()
+    )
+    return mensal
+
+
+def calcular_estatisticas_ghi_horario(df: pd.DataFrame) -> dict[str, float | str]:
+    """Calcula media, sigma e COV do GHI horario antes da agregacao diaria."""
+    date_col, ghi_col = detectar_colunas(df)
+    if date_col is None:
+        if isinstance(df.index, pd.DatetimeIndex):
+            datas = pd.Series(df.index, index=df.index)
+        else:
+            raise ValueError("Nao foi encontrada coluna de data para estatisticas horarias.")
+    else:
+        datas = pd.to_datetime(df[date_col], errors="coerce")
+
+    ghi = pd.to_numeric(df[ghi_col], errors="coerce")
+    valido = datas.notna() & ghi.notna() & (ghi >= 0)
+    datas_validas = datas.loc[valido].sort_values()
+    ghi_valido = ghi.loc[datas_validas.index].astype(float)
+
+    if ghi_valido.empty:
+        return {
+            "ghi_horario_media": float("nan"),
+            "ghi_horario_sigma": float("nan"),
+            "ghi_horario_cov": float("nan"),
+            "ghi_horario_cov_percentual": float("nan"),
+            "ghi_horario_observacoes": 0.0,
+            "ghi_horario_fonte_estatistica": "indisponivel",
+        }
+
+    deltas = datas_validas.diff().dropna()
+    intervalo_mediano_horas = deltas.median() / pd.Timedelta(hours=1) if not deltas.empty else float("nan")
+    fonte = "horaria" if pd.notna(intervalo_mediano_horas) and intervalo_mediano_horas <= 1.5 else "nao_horaria"
+
+    media = float(ghi_valido.mean())
+    sigma = float(ghi_valido.std(ddof=0))
+    cov = float("nan") if np.isclose(media, 0.0) else sigma / media
+    return {
+        "ghi_horario_media": media,
+        "ghi_horario_sigma": sigma,
+        "ghi_horario_cov": cov,
+        "ghi_horario_cov_percentual": cov * 100 if not np.isnan(cov) else float("nan"),
+        "ghi_horario_observacoes": float(len(ghi_valido)),
+        "ghi_horario_intervalo_mediano_horas": float(intervalo_mediano_horas),
+        "ghi_horario_fonte_estatistica": fonte,
+    }
 
 
 def _read_data_file(path: Path) -> pd.DataFrame:
@@ -398,6 +463,7 @@ def coletar_ghi_nrel(
     # Cada ano e coletado separadamente porque este e o contrato da API.
     frames = []
     metadata_by_year = []
+    hourly_frames = []
     for index, year in enumerate(anos_solicitados):
         # Faz ate tres tentativas para tolerar falhas transitorias de rede.
         for attempt in range(3):
@@ -424,6 +490,7 @@ def coletar_ghi_nrel(
 
         # Reduz as observacoes horarias a uma media por dia. Horas noturnas
         # tambem fazem parte da media diaria de 24 horas.
+        hourly_frames.append(df_year[["ghi"]])
         daily = df_year[["ghi"]].resample("D").mean()
         # Remove apenas a informacao de fuso, preservando o horario local usado
         # pela consulta (``utc=False``).
@@ -438,6 +505,7 @@ def coletar_ghi_nrel(
 
     # Une todos os anos, limpa novamente e garante uma serie diaria ordenada.
     ghi_daily = pd.concat(frames).reset_index()
+    estatisticas_horarias = calcular_estatisticas_ghi_horario(pd.concat(hourly_frames))
     ghi_daily = limpar_serie_ghi(ghi_daily)
 
     # Bloco de identificacao geografica da localidade.
@@ -479,6 +547,8 @@ def coletar_ghi_nrel(
     ghi_daily["timezone_nsrdb"] = metadata_by_year[0].get("Time Zone")
     ghi_daily["elevacao_grade_m"] = metadata_by_year[0].get("altitude")
     ghi_daily["ghi_unidade_api"] = metadata_by_year[0].get("GHI Units")
+    for coluna, valor in estatisticas_horarias.items():
+        ghi_daily[coluna] = valor
     # Data em UTC permite saber quando o arquivo foi obtido.
     ghi_daily["data_coleta_utc"] = datetime.now(timezone.utc).isoformat()
 
@@ -610,13 +680,14 @@ def normalizar_minmax(
 
 def preparar_serie_temporal(
     df: pd.DataFrame,
-    lags: tuple[int, ...] = (1, 2, 3, 7),
-    moving_windows: tuple[int, ...] = (3, 7, 30),
+    lags: tuple[int, ...] | None = None,
+    moving_windows: tuple[int, ...] | None = None,
     n_niveis: int = 128,
     train_ratio: float = 0.8,
     output_path: str | Path | None = PASTA_DADOS_PROCESSADOS / "ghi_features.csv",
+    frequencia_modelagem: str = "diaria",
 ) -> PreparationResult:
-    """Prepara a base supervisionada para previsao do GHI do dia seguinte.
+    """Prepara a base supervisionada para prever o proximo periodo de GHI.
 
     Args:
         df: Serie bruta contendo data e GHI.
@@ -626,6 +697,8 @@ def preparar_serie_temporal(
         train_ratio: Proporcao cronologica inicial usada para treino.
         output_path: Arquivo opcional para salvar as features. Use ``None``
             para preparar os dados sem escrever no disco.
+        frequencia_modelagem: ``diaria`` para prever o dia seguinte ou
+            ``mensal`` para prever o mes seguinte.
 
     Returns:
         Objeto ``PreparationResult`` com a base de modelagem, colunas de
@@ -639,16 +712,28 @@ def preparar_serie_temporal(
     # Validacoes antecipadas produzem mensagens claras antes de iniciar calculos.
     if not 0 < train_ratio < 1:
         raise ValueError("train_ratio deve estar entre 0 e 1.")
+    if frequencia_modelagem not in FREQUENCIAS_MODELAGEM:
+        raise ValueError("frequencia_modelagem deve ser 'diaria' ou 'mensal'.")
+
+    if lags is None:
+        lags = (1, 2, 3, 7) if frequencia_modelagem == "diaria" else (1, 2, 3, 6)
+    if moving_windows is None:
+        moving_windows = (3, 7, 30) if frequencia_modelagem == "diaria" else (3, 6, 12)
+
     if any(lag < 1 for lag in lags):
         raise ValueError("Todos os lags devem ser maiores ou iguais a 1.")
     if any(janela < 1 for janela in moving_windows):
         raise ValueError("Todas as janelas moveis devem ser maiores ou iguais a 1.")
 
-    # Etapa 1: contrato comum com duas colunas, ordem cronologica e escala diaria.
+    # Etapa 1: contrato comum com duas colunas, ordem cronologica e escala escolhida.
     serie = limpar_serie_ghi(df)
+    periodo_label = "d"
+    if frequencia_modelagem == "mensal":
+        serie = garantir_resolucao_mensal(serie)
+        periodo_label = "m"
 
-    # Uma janela de N dias perde N-1 linhas no inicio. Um lag chamado t-k usa
-    # ``shift(k-1)`` porque os nomes sao relativos ao alvo do dia seguinte.
+    # Uma janela de N periodos perde N-1 linhas no inicio. Um lag chamado t-k
+    # usa ``shift(k-1)`` porque os nomes sao relativos ao alvo seguinte.
     historico_necessario = max(
         [lag - 1 for lag in lags] + [janela - 1 for janela in moving_windows],
         default=0,
@@ -690,11 +775,12 @@ def preparar_serie_temporal(
     dados["ghi_quantizado"] = ghi_quantizado.astype(int)
     dados["ghi_normalizado"] = ghi_normalizado.astype(float)
 
-    # Etapa 3: cria lags, medias moveis e o alvo do dia seguinte.
+    # Etapa 3: cria lags, medias moveis e o alvo do periodo seguinte.
     dados_modelagem, feature_columns = criar_features_temporais(
         dados,
         lags=lags,
         moving_windows=moving_windows,
+        periodo_label=periodo_label,
     )
     # Recalcula sobre o tamanho real como verificacao final do corte.
     train_size = int(len(dados_modelagem) * train_ratio)

@@ -1,0 +1,251 @@
+\documentclass[12pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[brazil]{babel}
+\usepackage{mathptmx}
+\usepackage{geometry}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{indentfirst}
+\usepackage{url}
+
+\geometry{
+  a4paper,
+  left=2.5cm,
+  right=2.5cm,
+  top=2.5cm,
+  bottom=2.5cm
+}
+
+\pagestyle{empty}
+\setlength{\parindent}{0.75cm}
+\setlength{\parskip}{0pt}
+\renewcommand{\baselinestretch}{1.0}
+
+\begin{document}
+
+\begin{center}
+\textbf{PREVISÃO DIÁRIA E MENSAL DE IRRADIÂNCIA GLOBAL HORIZONTAL EM LOCALIDADES DE FÁBRICAS DE VEÍCULOS ELÉTRICOS COM XGBOOST E REDES NEURAIS}
+\end{center}
+
+\vspace{12pt}
+
+\noindent\textbf{Gustavo De Melo Nascimento}$^{1}$ - g239679@dac.unicamp.br
+
+\noindent\textbf{Thales Wulfert Cabral}$^{2}$ - t264377@dac.unicamp.br
+
+\noindent\textbf{Gustavo Fraidenraich}$^{3}$ - gfraiden@unicamp.br
+
+\vspace{6pt}
+
+\noindent$^{1}$ Aluno, Faculdade de Engenharia Elétrica e de Computação (FEEC), Universidade Estadual de Campinas (UNICAMP) - Campinas, SP, Brasil
+
+\noindent$^{2}$ Coorientador, Faculdade de Engenharia Elétrica e de Computação (FEEC), Universidade Estadual de Campinas (UNICAMP) - Campinas, SP, Brasil
+
+\noindent$^{3}$ Orientador, DECOM, Faculdade de Engenharia Elétrica e de Computação (FEEC), Universidade Estadual de Campinas (UNICAMP) - Campinas, SP, Brasil
+
+\vspace{24pt}
+
+\noindent\textbf{\textit{Resumo.}} \textit{Este artigo apresenta um fluxo computacional para previsão da Irradiância Global Horizontal (GHI) em dez localidades associadas a fábricas de veículos elétricos. Foram utilizados dados horários oficiais do NREL/NSRDB, do produto GOES Aggregated PSM v4, no período de 2019 a 2024. A série horária foi convertida para médias diárias e, em um fluxo complementar, para médias mensais. Após validação, quantização em 128 níveis, normalização e criação de variáveis temporais, foram comparados quatro modelos de regressão: XGBoost, MLP, RNN e LSTM. A divisão entre treino e teste preservou a ordem temporal, com 80\% dos exemplos para treinamento e 20\% para avaliação. Na previsão diária, a média dos melhores modelos por localidade apresentou MAE de 37,77 W/m$^2$, RMSE de 49,72 W/m$^2$ e R$^2$ de 0,66. Na previsão mensal, o RMSE médio dos melhores modelos foi de 16,77 W/m$^2$ e o R$^2$ médio foi de 0,89.}
+
+\vspace{12pt}
+
+\noindent\textbf{\textit{Palavras-chave:}} Irradiância solar, Aprendizado de máquina, Séries temporais, XGBoost, Redes neurais
+
+\vspace{24pt}
+
+\noindent\textbf{1. INTRODUÇÃO}
+
+A previsão de irradiância solar é uma etapa relevante para estudos de planejamento energético, operação de sistemas fotovoltaicos e avaliação de recursos solares. A Irradiância Global Horizontal (GHI) representa a radiação solar incidente sobre uma superfície horizontal e é uma das variáveis mais utilizadas para caracterizar a disponibilidade de energia solar em uma localidade. Em aplicações fotovoltaicas, a análise de séries históricas de GHI apoia estudos preliminares de viabilidade, comparação entre regiões e dimensionamento energético (Pinho e Galdino, 2014; Villalva e Gazoli, 2012).
+
+Com o crescimento da eletrificação do setor de transportes, localidades associadas a fábricas de veículos elétricos tornam-se pontos de interesse para análises energéticas. Essas instalações combinam alto consumo de energia, cadeias produtivas estratégicas e possibilidade de integração com geração solar fotovoltaica local. Neste trabalho, as fábricas são utilizadas como pontos geográficos de análise, sem assumir que elas alterem ou causem padrões específicos de irradiância.
+
+Séries medidas em estações meteorológicas podem apresentar limitações de cobertura espacial, períodos curtos de medição e falhas de registro. Bases satelitais, como o NSRDB, permitem obter séries padronizadas para diferentes coordenadas geográficas, tornando possível comparar localidades distintas sob uma mesma metodologia. Esse tipo de abordagem é especialmente útil em estudos computacionais que envolvem múltiplas regiões e requerem reprodutibilidade.
+
+O objetivo deste artigo é prever a GHI média do próximo período a partir do histórico observado até o período atual. O fluxo principal utiliza médias diárias para prever o dia seguinte, enquanto um fluxo complementar utiliza médias mensais para prever o mês seguinte. Para isso, foi desenvolvido um fluxo de aprendizado de máquina baseado em dados oficiais do NREL/NSRDB, com validação, transformação temporal e suporte à comparação entre quatro modelos de regressão: XGBoost, MLP, RNN e LSTM. A principal contribuição está na construção de um procedimento reprodutível e auditável para previsão de GHI em dez localidades distribuídas no Brasil, Estados Unidos e México.
+
+\vspace{12pt}
+
+\noindent\textbf{2. METODOLOGIA}
+
+\vspace{12pt}
+
+\noindent\textbf{2.1 Dados utilizados}
+
+Os dados utilizados foram obtidos a partir do NREL/NSRDB, base amplamente utilizada para séries históricas de radiação solar (Wilcox, 2012; Sengupta et al., 2018), no produto GOES Aggregated PSM v4. A variável selecionada foi a GHI em resolução horária, com unidade W/m$^2$. O período analisado compreende 1 de janeiro de 2019 a 31 de dezembro de 2024, totalizando 2.192 dias por localidade. A aquisição e a organização dos dados foram realizadas em Python, com apoio de bibliotecas para processamento de dados solares, como o pvlib (PVLIB Python Development Team, 2026).
+
+Foram avaliadas dez localidades associadas a fábricas de veículos elétricos: BYD Camaçari, Tesla Gigafactory Nevada, Tesla Gigafactory Texas, Hyundai Metaplant Georgia, Rivian Normal, Tesla Fremont Factory, Lucid AMP 1 Casa Grande, GM Factory Zero, Ford Rouge Electric Vehicle Center e BMW San Luis Potosí. Cada localidade foi tratada de forma independente, com um conjunto de dados, modelos e métricas próprios.
+
+\vspace{12pt}
+
+\noindent\textbf{2.2 Pré-processamento}
+
+Inicialmente, os registros horários de GHI foram agregados por média diária. Essa transformação preserva a unidade W/m$^2$, pois representa a média da potência solar incidente ao longo do dia, e não a energia acumulada diária. Em um segundo fluxo, as médias diárias foram agregadas por mês civil, gerando uma série mensal de GHI médio. Em seguida, a série foi validada quanto à cobertura temporal, datas duplicadas, valores ausentes, valores negativos, unidade, origem e compatibilidade geográfica.
+
+Após a limpeza, a série de GHI de cada fluxo foi quantizada em 128 níveis inteiros, de 0 a 127, e posteriormente normalizada para o intervalo entre 0 e 1. Os parâmetros de escala foram ajustados apenas no conjunto de treinamento e reaplicados ao conjunto de teste, reduzindo o risco de vazamento de informação futura.
+
+\vspace{12pt}
+
+\noindent\textbf{2.3 Variáveis temporais e alvo}
+
+O problema foi formulado como regressão de série temporal. No fluxo diário, para uma linha associada ao dia $t$, o alvo é a GHI do dia $t+1$. As variáveis de entrada foram construídas apenas com informações disponíveis até o dia $t$, incluindo quatro defasagens e três médias móveis:
+
+\vspace{6pt}
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+\textbf{Variável} & \textbf{Descrição} \\
+\midrule
+GHI$_{t-1}$ & GHI observada no dia $t$ \\
+GHI$_{t-2}$ & GHI observada no dia $t-1$ \\
+GHI$_{t-3}$ & GHI observada no dia $t-2$ \\
+GHI$_{t-7}$ & GHI observada no dia $t-6$ \\
+Média móvel 3d & Média dos últimos 3 dias até $t$ \\
+Média móvel 7d & Média dos últimos 7 dias até $t$ \\
+Média móvel 30d & Média dos últimos 30 dias até $t$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\vspace{6pt}
+
+A janela de 30 dias remove as primeiras 29 linhas da série, e a ausência de alvo para o último dia remove mais uma linha. Assim, a base final de modelagem contém 2.162 exemplos por localidade.
+
+No fluxo mensal, a mesma lógica foi aplicada sobre a série agregada por mês. Nesse caso, o alvo é a GHI média do mês seguinte, com defasagens mensais de 1, 2, 3 e 6 meses e médias móveis de 3, 6 e 12 meses. A base mensal contém 60 exemplos por localidade após a remoção das linhas sem histórico completo e sem alvo futuro.
+
+\vspace{12pt}
+
+\noindent\textbf{2.4 Modelos avaliados}
+
+O fluxo computacional foi estruturado para comparar quatro modelos de regressão. O XGBoost utiliza árvores de decisão combinadas por gradiente e apresenta bom desempenho em problemas tabulares não lineares (Chen e Guestrin, 2016). A MLP recebeu as sete variáveis de entrada de cada fluxo e foi configurada com duas camadas ocultas, com 64 e 32 neurônios, função de ativação ReLU e uma saída contínua. Além disso, foram incorporadas arquiteturas recorrentes RNN e LSTM, nas quais as sete variáveis temporais são reinterpretadas como uma sequência curta de entrada. Redes neurais desse tipo são capazes de aproximar relações não lineares entre entradas históricas e o alvo previsto (Haykin, 2009; Géron, 2022). A formulação seguiu uma estratégia supervisionada de previsão temporal, na qual observações passadas são usadas para estimar um valor futuro (Hyndman e Athanasopoulos, 2021).
+
+\vspace{12pt}
+
+\noindent\textbf{2.5 Avaliação}
+
+A divisão entre treinamento e teste foi feita de forma cronológica, sem embaralhamento. Foram utilizados 80\% dos exemplos para treinamento e 20\% para teste em cada fluxo. Na escala diária, o período de teste corresponde aos alvos entre 26 de outubro de 2023 e 31 de dezembro de 2024. Na escala mensal, o teste corresponde aos alvos mensais de 2024. As métricas calculadas foram erro absoluto médio (MAE), erro quadrático médio (MSE), raiz do erro quadrático médio (RMSE), coeficiente de determinação (R$^2$) e RMSE normalizado (nRMSE), calculado em relação à média da GHI observada no teste.
+
+\vspace{12pt}
+
+\noindent\textbf{3. RESULTADOS E DISCUSSÃO}
+
+Os resultados indicaram que os quatro modelos foram capazes de capturar parte relevante da dinâmica temporal da GHI diária. Considerando o melhor modelo em cada localidade, a média geral foi de MAE igual a 37,77 W/m$^2$, RMSE igual a 49,72 W/m$^2$, R$^2$ igual a 0,66 e nRMSE igual a 26,86\%. A RNN obteve o melhor desempenho em cinco das dez localidades, o XGBoost em três e a MLP em duas. A LSTM foi treinada e avaliada em todas as localidades, mas não apresentou o maior R$^2$ em nenhuma delas nesta configuração experimental diária.
+
+\vspace{6pt}
+
+\begin{center}
+\small
+\begin{tabular}{p{5.2cm}p{1.6cm}p{1.9cm}rrrr}
+\toprule
+\textbf{Localidade} & \textbf{País} & \textbf{Modelo} & \textbf{MAE} & \textbf{RMSE} & \textbf{R$^2$} & \textbf{nRMSE} \\
+ & & & \textbf{W/m$^2$} & \textbf{W/m$^2$} & & \textbf{\%} \\
+\midrule
+BYD Camaçari & Brasil & MLP & 38,75 & 49,67 & 0,39 & 20,35 \\
+Tesla Gigafactory Nevada & EUA & XGBoost & 28,47 & 39,26 & 0,86 & 19,13 \\
+Tesla Gigafactory Texas & EUA & RNN & 42,99 & 54,92 & 0,57 & 28,02 \\
+Hyundai Metaplant Georgia & EUA & RNN & 45,87 & 56,93 & 0,52 & 30,50 \\
+Rivian Normal & EUA & MLP & 46,85 & 59,50 & 0,64 & 36,11 \\
+Tesla Fremont Factory & EUA & XGBoost & 25,05 & 37,11 & 0,87 & 18,14 \\
+Lucid AMP 1 Casa Grande & EUA & RNN & 23,99 & 36,47 & 0,82 & 15,70 \\
+GM Factory Zero & EUA & RNN & 45,97 & 59,51 & 0,64 & 41,04 \\
+Ford Rouge Electric Vehicle Center & EUA & XGBoost & 46,01 & 58,51 & 0,65 & 40,31 \\
+BMW San Luis Potosí & México & RNN & 33,71 & 45,35 & 0,60 & 19,30 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\vspace{6pt}
+
+O menor RMSE foi observado em Lucid AMP 1 Casa Grande, com RMSE de 36,47 W/m$^2$ e R$^2$ de 0,82 usando RNN. Os maiores valores de R$^2$ ocorreram em Tesla Fremont Factory e Tesla Gigafactory Nevada, ambas com melhor desempenho por XGBoost e R$^2$ acima de 0,85. Esses casos indicam que localidades com padrões de irradiância mais regulares tendem a favorecer previsões de curto prazo baseadas em defasagens e médias móveis.
+
+As maiores dificuldades ocorreram em localidades como GM Factory Zero e Ford Rouge Electric Vehicle Center, que apresentaram nRMSE superior a 40\%. Esse comportamento sugere maior variabilidade temporal da irradiância diária ou menor capacidade das variáveis históricas simples em representar mudanças meteorológicas rápidas. Mesmo nesses casos, os modelos mantiveram R$^2$ acima de 0,63, indicando que parte significativa da variabilidade ainda foi explicada.
+
+No fluxo mensal, o desempenho foi superior ao observado na escala diária, como esperado, pois a agregação mensal suaviza variações meteorológicas rápidas. Considerando o melhor modelo de cada localidade, a média geral foi de MAE igual a 13,63 W/m$^2$, RMSE igual a 16,77 W/m$^2$, R$^2$ igual a 0,89 e nRMSE igual a 8,28\%. A RNN apresentou o melhor desempenho em quatro localidades, enquanto MLP e XGBoost foram superiores em três localidades cada.
+
+\vspace{6pt}
+
+\begin{center}
+\small
+\begin{tabular}{p{5.2cm}p{1.6cm}p{1.9cm}rrrr}
+\toprule
+\textbf{Localidade} & \textbf{País} & \textbf{Modelo} & \textbf{MAE} & \textbf{RMSE} & \textbf{R$^2$} & \textbf{nRMSE} \\
+ & & & \textbf{W/m$^2$} & \textbf{W/m$^2$} & & \textbf{\%} \\
+\midrule
+BYD Camaçari & Brasil & RNN & 16,74 & 22,03 & 0,65 & 9,33 \\
+Tesla Gigafactory Nevada & EUA & MLP & 10,02 & 12,29 & 0,98 & 5,53 \\
+Tesla Gigafactory Texas & EUA & MLP & 15,13 & 18,44 & 0,90 & 8,83 \\
+Hyundai Metaplant Georgia & EUA & XGBoost & 12,05 & 15,98 & 0,92 & 8,06 \\
+Rivian Normal & EUA & MLP & 20,45 & 23,73 & 0,90 & 13,19 \\
+Tesla Fremont Factory & EUA & RNN & 10,13 & 12,17 & 0,98 & 5,52 \\
+Lucid AMP 1 Casa Grande & EUA & XGBoost & 5,61 & 6,65 & 0,99 & 2,70 \\
+GM Factory Zero & EUA & RNN & 13,04 & 16,12 & 0,96 & 10,06 \\
+Ford Rouge Electric Vehicle Center & EUA & RNN & 12,10 & 15,38 & 0,96 & 9,59 \\
+BMW San Luis Potosí & México & XGBoost & 21,07 & 24,91 & 0,69 & 10,05 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\vspace{6pt}
+
+A comparação entre os modelos mostra que, na escala diária, a RNN obteve o melhor resultado no maior número de localidades, embora as diferenças tenham sido pequenas em vários casos. O XGBoost permaneceu competitivo e foi superior em três localidades, especialmente nas séries com maior regularidade, enquanto a MLP venceu em duas. Na escala mensal, RNN, MLP e XGBoost alternaram a liderança entre as localidades. Essa diferença indica que não há um único modelo dominante para todas as regiões avaliadas. Portanto, a escolha do modelo deve considerar as características locais da série temporal, a escala temporal adotada e o comportamento observado no período de validação.
+
+\vspace{12pt}
+
+\noindent\textbf{4. CONCLUSÕES}
+
+Este trabalho apresentou um fluxo de aprendizado de máquina para previsão da GHI média diária do dia seguinte e da GHI média mensal do mês seguinte em dez localidades associadas a fábricas de veículos elétricos. A metodologia utilizou dados oficiais do NREL/NSRDB entre 2019 e 2024, com validação, agregação temporal, quantização, normalização, criação de variáveis temporais e avaliação cronológica.
+
+Os resultados mostram que a previsão de um dia à frente é viável usando apenas histórico diário de GHI. A RNN apresentou melhor desempenho em cinco localidades, o XGBoost em três e a MLP em duas, enquanto a LSTM não foi vencedora nesta configuração experimental. Considerando os melhores modelos por localidade, obteve-se RMSE médio de 49,72 W/m$^2$ e R$^2$ médio de 0,66. No fluxo mensal, o RMSE médio dos melhores modelos caiu para 16,77 W/m$^2$ e o R$^2$ médio aumentou para 0,89, indicando que a escala mensal é mais previsível por suavizar variações diárias de curto prazo.
+
+Como trabalhos futuros, recomenda-se incluir variáveis meteorológicas adicionais, como temperatura, nebulosidade, umidade e velocidade do vento, além de avaliar horizontes de previsão maiores e modelos globais treinados com múltiplas localidades. A metodologia também pode ser reutilizada em estudos preliminares de dimensionamento e comparação de sistemas solares fotovoltaicos em ambientes industriais.
+
+\vspace{12pt}
+
+\noindent\textbf{\textit{Agradecimentos}}
+
+Os autores agradecem à Universidade Estadual de Campinas (UNICAMP) e à Faculdade de Engenharia Elétrica e de Computação (FEEC) pelo apoio institucional ao desenvolvimento deste projeto.
+
+\vspace{12pt}
+
+\noindent\textbf{REFERÊNCIAS}
+
+\vspace{6pt}
+
+\noindent Chen, T. e Guestrin, C. (2016), ``XGBoost: A scalable tree boosting system'', \textit{Proceedings of the 22nd ACM SIGKDD International Conference on Knowledge Discovery and Data Mining}, San Francisco, p. 785--794.
+
+\vspace{6pt}
+
+\noindent Géron, A. (2022), \textit{Hands-On Machine Learning with Scikit-Learn, Keras, and TensorFlow}, 3a ed., O'Reilly Media, Sebastopol.
+
+\vspace{6pt}
+
+\noindent Haykin, S. (2009), \textit{Neural Networks and Learning Machines}, 3a ed., Pearson, New Jersey.
+
+\vspace{6pt}
+
+\noindent Hyndman, R. J. e Athanasopoulos, G. (2021), \textit{Forecasting: Principles and Practice}, 3a ed., OTexts, Melbourne.
+
+\vspace{6pt}
+
+\noindent Pinho, J. T. e Galdino, M. A. (2014), \textit{Manual de Engenharia para Sistemas Fotovoltaicos}, CEPEL/CRESESB, Rio de Janeiro.
+
+\vspace{6pt}
+
+\noindent PVLIB Python Development Team (2026), \textit{pvlib python: a Python package for modeling solar energy systems}, documentação técnica.
+
+\vspace{6pt}
+
+\noindent Sengupta, M.; Xie, Y.; Lopez, A.; Habte, A.; Maclaurin, G. e Shelby, J. (2018), ``The National Solar Radiation Data Base (NSRDB)'', \textit{Renewable and Sustainable Energy Reviews}, vol. 89, p. 51--60.
+
+\vspace{6pt}
+
+\noindent Villalva, M. G. e Gazoli, J. R. (2012), \textit{Energia Solar Fotovoltaica: Conceitos e Aplicações}, 2a ed., Érica, São Paulo.
+
+\vspace{6pt}
+
+\noindent Wilcox, S. (2012), \textit{National Solar Radiation Database 1991--2010 Update: User's Manual}, National Renewable Energy Laboratory, Golden.
+
+\end{document}
